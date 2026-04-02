@@ -1,0 +1,15 @@
+.codex
+dataset/
+runs/
+__pycache__/
+*.log
+*.ckpt
+*.pt
+*.pth
+*.h5
+*.json
+*.csv
+*.zip
+*.tar.gz
+*.tar
+*.tar.bz2

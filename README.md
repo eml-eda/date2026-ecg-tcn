@@ -23,6 +23,9 @@ rm -r ./physionet.org
 
 ```shell
 pip install numpy pandas matplotlib torch tqdm scikit-learn wfdb
+# extras for PLiNIO
+pip install tdigest
+pip install git+https://github.com/eml-eda/plinio
 ```
 
 ## Run

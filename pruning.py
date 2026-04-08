@@ -134,7 +134,7 @@ def main() -> None:
     model = PIT(
         dense_model,
         input_shape=tuple(signals.shape[1:]),
-        discrete_cost=args.discrete_cost,
+        discrete_cost=args.pit_discrete_cost,
     ).to(device)
 
     pos_weight = compute_pos_weight(labels, splits.train_idx).to(device)

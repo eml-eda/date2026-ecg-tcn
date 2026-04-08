@@ -3,50 +3,23 @@ import time
 from pathlib import Path
 from typing import Dict, List
 
-import numpy as np
 import torch
 import torch.nn as nn
+from torchinfo import summary
 
 
 from tcn.cli import parse_args
 from tcn.constants import (
-    INT16_QMAX,
-    INT16_QMIN,
-    INT32_QMAX,
-    INT32_QMIN,
-    INT8_QMAX,
-    INT8_QMIN,
     LABELS,
 )
 from tcn.data import (
-    PTBXLDataset,
-    SplitData,
-    aggregate_superclasses,
     build_loaders,
-    build_or_load_signal_cache,
     build_splits,
-    compute_channel_mean_std,
-    filter_ptbxl_records_with_files,
     load_ptbxl,
 )
 from tcn.model import (
-    EMASymmetricObserver,
-    IntegerAddReLUQAT,
-    IntegerConv1dQAT,
-    IntegerGlobalAvgPool1dQAT,
-    IntegerModule,
-    IntegerReLUQAT,
     IntegerTCN,
-    TCNBlock,
     unwrap_model,
-)
-from tcn.quantization import (
-    approx_int_multiplier,
-    clamp_ste,
-    fake_quant_sym,
-    fake_quant_sym_per_channel,
-    integer_requantize,
-    round_ste,
 )
 from tcn.training import (
     compute_pos_weight,
@@ -54,13 +27,26 @@ from tcn.training import (
     export_integer_model,
     make_scheduler,
     monitor_value,
-    safe_classification_metrics,
     save_checkpoint,
     save_history_csv,
     save_plots,
     set_seed,
     train_one_epoch,
 )
+
+
+def print_network_info(model: nn.Module, input_shape: torch.Size) -> None:
+    print(
+        summary(
+            model,
+            input_size=(1, *input_shape),
+            col_names=("input_size", "output_size", "num_params"),
+            depth=8,
+            verbose=1,
+            device=str(next(model.parameters()).device),
+        )
+    )
+
 
 def main() -> None:
     args = parse_args()
@@ -100,6 +86,7 @@ def main() -> None:
     splits = build_splits(metadata)
 
     device = torch.device(args.device)
+    print("Using device:", device)
     model = IntegerTCN(
         in_channels=12,
         num_classes=len(LABELS),
@@ -111,6 +98,7 @@ def main() -> None:
         observer_momentum=args.observer_momentum,
         pow2_scales=args.pow2_scales,
     ).to(device)
+    print_network_info(model, signals.shape[1:])
 
     receptive_field = unwrap_model(model).receptive_field()
     seq_len = int(signals.shape[-1])

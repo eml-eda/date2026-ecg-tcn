@@ -54,6 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pit-arch-weight-decay", type=float, default=0.0)
     parser.add_argument("--pit-reg-strength", type=float, default=1e-8)
     parser.add_argument("--pit-arch-start-epoch", type=int, default=1)
+    parser.add_argument("--pit-discrete-cost", type=bool, default=True)
     return parser.parse_args()
 
 
@@ -133,6 +134,7 @@ def main() -> None:
     model = PIT(
         dense_model,
         input_shape=tuple(signals.shape[1:]),
+        discrete_cost=args.discrete_cost,
     ).to(device)
 
     pos_weight = compute_pos_weight(labels, splits.train_idx).to(device)

@@ -48,7 +48,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--kernel-size", type=int, default=5)
     parser.add_argument("--dilations", type=str, default="1,2,4,8,16,32,64")
     parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--compile", action="store_true")
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--pit-arch-lr", type=float, default=1e-3)
     parser.add_argument("--pit-arch-weight-decay", type=float, default=0.0)
@@ -404,14 +403,14 @@ def save_pruned_artifacts(
     pruning_summary = summarize_pruning(pit_model, exported_model, dense_params)
     pruning_summary["config"] = vars(args)
 
-    # torch.save(exported_model, outdir / "best_pruned_model.pt")
-    # torch.save(
-    #     {
-    #         "state_dict": exported_model.state_dict(),
-    #         "summary": pruning_summary,
-    #     },
-    #     outdir / "best_pruned_state.pt",
-    # )
+    torch.save(exported_model, outdir / "best_pruned_model.pt")
+    torch.save(
+        {
+            "state_dict": exported_model.state_dict(),
+            "summary": pruning_summary,
+        },
+        outdir / "best_pruned_state.pt",
+    )
     with open(outdir / "best_pruning_summary.json", "w") as handle:
         json.dump(pruning_summary, handle, indent=2)
     return pruning_summary

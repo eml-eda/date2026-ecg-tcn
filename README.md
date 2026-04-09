@@ -3,7 +3,7 @@
 ## Clone Repo
 
 ```shell
-git clone git@github.com:AlessandroVaraldi/ecg-tcn.git
+git clone git@github.com:eml-eda/date2026-ecg-tcn.git
 cd ecg-tcn
 ```
 

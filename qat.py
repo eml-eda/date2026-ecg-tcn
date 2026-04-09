@@ -2,7 +2,7 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 import torch
 import torch.nn as nn
@@ -22,8 +22,8 @@ from tcn.training import (
 )
 
 from plinio.methods.mps import MPS, get_default_qinfo, set_pact_clip_values
-from plinio.methods.mps.quant.backends.onnx.exporter import ONNXExporter
-from plinio.methods.mps.quant.quantizers import PACTActSigned
+from plinio.methods.mps.quant.backends import Backend, integerize_arch
+from plinio.methods.mps.quant.backends.match.exporter import MATCHExporter
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -129,7 +129,6 @@ def main() -> None:
     best_metric = -float("inf")
     best_epoch = -1
     patience_counter = 0
-    best_qat_summary: Dict[str, Any] | None = None
 
     print("Loaded pruned model from:", pruned_model_path)
     print(f"Running fixed-precision MPS QAT at W{args.qat_weight_bits}/A{args.qat_activation_bits}.")
@@ -218,18 +217,28 @@ def main() -> None:
     print(f"Best epoch: {best_epoch}")
     print(f"Best monitor value: {best_metric:.6f}")
 
-    summary_payload: Dict[str, Any] = {
-        "best_epoch": best_epoch,
-        "best_metric": best_metric,
-        "monitor": args.monitor,
-        "early_stop_split": early_stop_split,
-        "sampling_rate": args.sampling_rate,
-        "labels": LABELS,
-    }
-    if best_qat_summary is not None:
-        summary_payload["best_qat_quantization"] = best_qat_summary["quantization"]
-    with open(outdir / "summary.json", "w") as handle:
-        json.dump(summary_payload, handle, indent=2)
+    # Final ONNX export
+    if best_epoch != -1:
+        best_checkpoint = torch.load(outdir / "best_qat_search.pt", map_location=device, weights_only=False)
+        model.load_state_dict(best_checkpoint["model_state"])
+        model.eval()
+
+        # everything needs to be on CPU for export
+        exported_model = model.cpu().export()
+        exported_model.eval()
+        full_int_model = integerize_arch(exported_model.cpu(), Backend.MATCH)
+        full_int_model = full_int_model.cpu()
+        pos_weight = pos_weight.cpu()
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+        test_metrics = evaluate(full_int_model, loaders["test"], criterion, 'cpu')
+        print(f"Exported full-integer model test AUROC: {test_metrics['macro_auroc']:.4f}")
+
+        onnx_exporter = MATCHExporter()
+        onnx_exporter.export(
+            network=full_int_model,
+            input_shape=torch.Size((1, *signals.shape[1:])),
+            path=outdir,
+        )
 
 
 def save_qat_checkpoint(

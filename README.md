@@ -34,4 +34,20 @@ Run with mostly default options.
 
 ```shell
 python3 main.py --root data/
-``` ecg-tcn
+```
+
+# Pruning
+
+Run pruning with PIT to obtain a circa 37k parameters model.
+
+```Python
+python3 pruning.py --root data --outdir runs_pit --pit-reg-strength 1e-06
+```
+
+# QAT
+
+Run QAT at w8a8 precision starting from the pruned model:
+
+```Python
+ python3 qat.py --root data --outdir runs_qat --pruned-model ./runs_pit/best_pruned_model.pt
+```

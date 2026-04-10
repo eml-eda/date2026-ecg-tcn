@@ -104,7 +104,7 @@ def main() -> None:
 
     qinfo = get_default_qinfo((args.qat_weight_bits,), (args.qat_activation_bits,))
     # input is signed
-    # qinfo['input_default']['quantizer'] = PACTActSigned
+    qinfo['input_default']['quantizer'] = PACTActSigned
     # initialize clip values using validation set statistics
     qinfo = set_pact_clip_values(
         base_model,

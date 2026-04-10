@@ -22,6 +22,7 @@ from tcn.training import (
 )
 
 from plinio.methods.mps import MPS, get_default_qinfo, set_pact_clip_values
+from plinio.methods.mps.quant.quantizers import PACTActSigned
 from plinio.methods.mps.quant.backends import Backend, integerize_arch
 from plinio.methods.mps.quant.backends.match.exporter import MATCHExporter
 
@@ -102,13 +103,15 @@ def main() -> None:
     print_network_info(base_model, signals.shape[1:])
 
     qinfo = get_default_qinfo((args.qat_weight_bits,), (args.qat_activation_bits,))
+    # input is signed
+    # qinfo['input_default']['quantizer'] = PACTActSigned
+    # initialize clip values using validation set statistics
     qinfo = set_pact_clip_values(
         base_model,
         torch.rand((1,) + signals.shape[1:]),
         qinfo,
         loaders["val"],
-        disable_shared_quantizers=True,
-        quantize_output=False,
+        # quantize_output=False,
         use_percentile=True,
         percentile=99.0
     )
@@ -117,7 +120,7 @@ def main() -> None:
         base_model,
         input_shape=tuple(signals.shape[1:]),
         qinfo=qinfo,
-        disable_shared_quantizers=True,
+        # quantize_output=False,
     ).to(device)
 
     pos_weight = compute_pos_weight(labels, splits.train_idx).to(device)
@@ -226,12 +229,12 @@ def main() -> None:
         # everything needs to be on CPU for export
         exported_model = model.cpu().export()
         exported_model.eval()
-        full_int_model = integerize_arch(exported_model.cpu(), Backend.MATCH)
+        full_int_model = integerize_arch(exported_model.cpu(), Backend.MATCH, backend_kwargs={'shift_pos': 16})
         full_int_model = full_int_model.cpu()
         pos_weight = pos_weight.cpu()
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        test_metrics = evaluate(full_int_model, loaders["test"], criterion, 'cpu')
-        print(f"Exported full-integer model test AUROC: {test_metrics['macro_auroc']:.4f}")
+        val_metrics = evaluate(full_int_model, loaders["val"], criterion, 'cpu')
+        print(f"Exported full-integer model val AUROC: {val_metrics['macro_auroc']:.4f}")
 
         onnx_exporter = MATCHExporter()
         onnx_exporter.export(

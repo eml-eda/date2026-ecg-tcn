@@ -233,7 +233,7 @@ def main() -> None:
         full_int_model = full_int_model.cpu()
         pos_weight = pos_weight.cpu()
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-        val_metrics = evaluate(full_int_model, loaders["val"], criterion, 'cpu')
+        val_metrics = evaluate(full_int_model, loaders["val"], criterion, 'cpu', integer=True)
         print(f"Exported full-integer model val AUROC: {val_metrics['macro_auroc']:.4f}")
 
         onnx_exporter = MATCHExporter()

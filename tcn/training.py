@@ -79,6 +79,7 @@ def evaluate(
     loader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
+    integer: bool = False,
 ) -> Dict[str, float]:
     model.eval()
     losses = []
@@ -89,6 +90,8 @@ def evaluate(
         x = x.to(device, non_blocking=True)
         y = y.to(device, non_blocking=True)
         logits = model(x)
+        if integer:
+            logits = logits * model.head.conv.s_w.view(1, -1) * model.head.conv.s_x
         loss = criterion(logits, y)
         losses.append(float(loss.item()))
         probs_all.append(torch.sigmoid(logits).cpu().numpy())

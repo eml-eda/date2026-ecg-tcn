@@ -2,7 +2,7 @@ import argparse
 import json
 import time
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Callable
 
 import numpy as np
 import torch
@@ -24,6 +24,10 @@ from tcn.training import (
 )
 
 from plinio.methods import PIT
+from plinio.regularizers import DUCCIO
+from plinio.cost import params
+# custom cost model for Rogue
+from cost_model.rogue_latency import rogue_latency
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
@@ -51,7 +55,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--save-every", type=int, default=1)
     parser.add_argument("--pit-arch-lr", type=float, default=1e-3)
     parser.add_argument("--pit-arch-weight-decay", type=float, default=0.0)
-    parser.add_argument("--pit-reg-strength", type=float, default=1e-8)
+    parser.add_argument("--pit-size-target", type=float, default=1e8)
+    parser.add_argument("--pit-latency-target", type=float, default=1e8)
     parser.add_argument("--pit-arch-start-epoch", type=int, default=1)
     parser.add_argument("--pit-discrete-cost", type=bool, default=True)
     return parser.parse_args()
@@ -132,9 +137,15 @@ def main() -> None:
 
     model = PIT(
         dense_model,
+        cost = {'size': params, 'latency': rogue_latency},
         input_shape=tuple(signals.shape[1:]),
         discrete_cost=args.pit_discrete_cost,
     ).to(device)
+
+    regularizer = DUCCIO(
+        {'size': args.pit_size_target, 'latency': args.pit_latency_target},
+        task_loss = 1.0, # an order-of-magnitude estimate of the task loss.
+    )
 
     pos_weight = compute_pos_weight(labels, splits.train_idx).to(device)
     criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
@@ -154,7 +165,7 @@ def main() -> None:
     best_pruning_summary: Dict[str, Any] | None = None
 
     print(f"Dense parameter count: {dense_params}")
-    print(f"Initial PIT cost: {float(model.cost.detach().cpu().item()):.2f}")
+    print(f"Initial size: {float(model.get_cost('size').detach().cpu().item()):.2f}, Initial latency: {float(model.get_cost('latency').detach().cpu().item()):.4f}")
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
@@ -171,7 +182,7 @@ def main() -> None:
             net_optimizer=net_optimizer,
             arch_optimizer=arch_optimizer,
             device=device,
-            reg_strength=args.pit_reg_strength,
+            regularizer=regularizer,
             update_architecture=update_architecture,
         )
         val_metrics = evaluate(model, loaders["val"], criterion, device)
@@ -179,9 +190,6 @@ def main() -> None:
 
         net_scheduler.step()
         arch_scheduler.step()
-
-        exported_model = model.export()
-        exported_params = count_parameters(exported_model)
         pit_summary = model.summary()
 
         row = {
@@ -189,10 +197,9 @@ def main() -> None:
             "lr": net_optimizer.param_groups[0]["lr"],
             "pit_arch_lr": arch_optimizer.param_groups[0]["lr"],
             "pit_architecture_updates": int(update_architecture),
-            "pit_cost": train_metrics["pit_cost"],
+            "size": train_metrics["size"],
+            "latency": train_metrics["latency"],
             "pit_reg_loss": train_metrics["reg_loss"],
-            "exported_parameters": exported_params,
-            "parameter_reduction": 1.0 - (exported_params / max(dense_params, 1)),
             "train_loss": train_metrics["loss"],
             "train_task_loss": train_metrics["task_loss"],
             "train_macro_auroc": train_metrics["macro_auroc"],
@@ -218,8 +225,8 @@ def main() -> None:
             f"train loss {train_metrics['loss']:.4f} | "
             f"val AUROC {val_metrics['macro_auroc']:.4f} | "
             f"test AUROC {test_metrics['macro_auroc']:.4f} | "
-            f"PIT cost {train_metrics['pit_cost']:.2f} | "
-            f"exported params {exported_params} | "
+            f"size {train_metrics['size']:.2f} | "
+            f"latency {train_metrics['latency']:.4f} | "
             f"monitor({early_stop_split}/{args.monitor})={current_metric:.4f}"
         )
 
@@ -286,9 +293,8 @@ def main() -> None:
     }
     if best_pruning_summary is not None:
         summary_payload["best_pruning"] = {
-            "exported_parameters": best_pruning_summary["exported_parameters"],
-            "parameter_reduction": best_pruning_summary["parameter_reduction"],
-            "pit_cost": best_pruning_summary["pit_cost"],
+            "size": best_pruning_summary["size"],
+            "latency": best_pruning_summary["latency"],
         }
     with open(outdir / "summary.json", "w") as handle:
         json.dump(summary_payload, handle, indent=2)
@@ -335,14 +341,15 @@ def train_one_epoch_pit(
     net_optimizer: torch.optim.Optimizer,
     arch_optimizer: torch.optim.Optimizer,
     device: torch.device,
-    reg_strength: float,
+    regularizer: Callable,
     update_architecture: bool,
 ) -> Dict[str, float]:
     model.train()
     losses: List[float] = []
     task_losses: List[float] = []
     reg_losses: List[float] = []
-    costs: List[float] = []
+    sizes: List[float] = []
+    latencies: List[float] = []
     probs_all = []
     targets_all = []
 
@@ -355,8 +362,8 @@ def train_one_epoch_pit(
 
         logits = model(x)
         task_loss = criterion(logits, y)
-        cost = model.cost if reg_strength > 0.0 else torch.zeros((), device=device)
-        reg_loss = reg_strength * cost if update_architecture else torch.zeros((), device=device)
+        # fixing the regularization strength to the final value from the start, since we're not doing annealing
+        reg_loss = regularizer(model, epoch=1, n_epochs=1) if update_architecture else torch.zeros((), device=device)
         loss = task_loss + reg_loss
 
         loss.backward()
@@ -367,7 +374,8 @@ def train_one_epoch_pit(
         losses.append(float(loss.item()))
         task_losses.append(float(task_loss.item()))
         reg_losses.append(float(reg_loss.item()))
-        costs.append(float(cost.detach().item()))
+        sizes.append(float(model.get_cost("size").detach().item()))
+        latencies.append(float(model.get_cost("latency").detach().item()))
         probs_all.append(torch.sigmoid(logits.detach()).cpu().numpy())
         targets_all.append(y.detach().cpu().numpy())
 
@@ -377,7 +385,8 @@ def train_one_epoch_pit(
     metrics["loss"] = float(sum(losses) / max(len(losses), 1))
     metrics["task_loss"] = float(sum(task_losses) / max(len(task_losses), 1))
     metrics["reg_loss"] = float(sum(reg_losses) / max(len(reg_losses), 1))
-    metrics["pit_cost"] = float(sum(costs) / max(len(costs), 1))
+    metrics["size"] = float(sum(sizes) / max(len(sizes), 1))
+    metrics["latency"] = float(sum(latencies) / max(len(latencies), 1))
     return metrics
 
 
@@ -388,8 +397,9 @@ def summarize_pruning(pit_model: nn.Module, exported_model: nn.Module, dense_par
         "dense_parameters": dense_params,
         "exported_parameters": pruned_params,
         "parameter_reduction": 1.0 - (pruned_params / max(dense_params, 1)),
-        "pit_cost": float(pit_model.cost.detach().cpu().item()),
         "architecture": arch_summary,
+        "size": float(pit_model.get_cost("size").detach().item()),
+        "latency": float(pit_model.get_cost("latency").detach().item()),
     }
 
 
